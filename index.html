@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FlashMail Ultimate</title>
+<style>
+:root{
+ --bg:#070912;
+ --panel:#111522;
+ --panel2:#171c2b;
+ --line:#2b334a;
+ --cyan:#00ffd5;
+ --pink:#ff3b9d;
+ --text:#f4f6ff;
+ --muted:#9ca3b5;
+}
+*{box-sizing:border-box;font-family:Inter,Arial,sans-serif}
+body{margin:0;background:var(--bg);color:var(--text)}
+header{height:90px;display:flex;align-items:center;justify-content:center;font-size:42px;font-weight:900}
+header span{color:var(--cyan)}
+#app{max-width:1200px;margin:auto;padding:20px}
+.layout{display:grid;grid-template-columns:280px 1fr;gap:20px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:22px;padding:20px;margin-bottom:20px}
+button{border:0;border-radius:12px;padding:12px 16px;margin:4px;cursor:pointer;font-weight:700}
+.primary{background:var(--cyan)}
+.pink{background:var(--pink);color:white}
+.dark{background:#202638;color:white}
+input{width:100%;padding:14px;border-radius:12px;background:#080b15;border:1px solid var(--line);color:white}
+.email{color:var(--cyan);word-break:break-all}
+.item{background:var(--panel2);border-radius:15px;padding:15px;margin:10px 0;border-left:4px solid var(--pink)}
+.small{font-size:13px;color:var(--muted)}
+.viewer{min-height:200px}
+@media(max-width:800px){.layout{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>⚡Flash<span>Mail</span></header>
+<div id="app">
+<div class="layout">
+<aside>
+<div class="card">
+<h3>Compte actif</h3>
+<div id="address" class="email">Aucun</div>
+<button class="primary" id="create">Créer</button>
+<button class="dark" id="copy">Copier</button>
+<button class="pink" id="sync">Synchroniser</button>
+</div>
+<div class="card">
+<h3>Comptes locaux</h3>
+<div id="accounts"></div>
+</div>
+</aside>
+<main>
+<div class="card">
+<input id="search" placeholder="Rechercher un mail">
+<h2>Réception <span id="count"></span></h2>
+<div id="inbox"></div>
+</div>
+<div class="card viewer" id="viewer">Aucun message ouvert</div>
+</main>
+</div>
+</div>
+<script>
+const API="https://api.mail.tm";
+
+const Store={
+ key:"flashmail_ultimate",
+ get(){return JSON.parse(localStorage.getItem(this.key))||{accounts:[],current:null}},
+ save(v){localStorage.setItem(this.key,JSON.stringify(v))}
+};
+
+let state=Store.get();
+let mails=[];
+
+const UI={
+ address:document.getElementById("address"),
+ accounts:document.getElementById("accounts"),
+ inbox:document.getElementById("inbox"),
+ count:document.getElementById("count"),
+ viewer:document.getElementById("viewer"),
+ search:document.getElementById("search")
+};
+
+function current(){
+ return state.accounts.find(a=>a.address===state.current);
+}
+
+function escape(t){
+ return String(t||"").replace(/[<>]/g,"");
+}
+
+function render(){
+ let c=current();
+ UI.address.textContent=c?c.address:"Aucun";
+
+ UI.accounts.innerHTML=state.accounts.map(a=>`
+ <div class="item">
+ ${escape(a.address)}
+ <br>
+ <button onclick="selectAccount('${a.address}')">Ouvrir</button>
+ <button class="pink" onclick="removeAccount('${a.address}')">X</button>
+ </div>`).join("")||"Vide";
+
+ renderMails();
+}
+
+async function api(path,options={}){
+ let r=await fetch(API+path,options);
+ if(!r.ok) throw new Error("API "+r.status);
+ return r.json();
+}
+
+async function createAccount(){
+ try{
+ let d=await api("/domains");
+ let domain=d["hydra:member"][0].domain;
+ let address="flash"+crypto.randomUUID().slice(0,8)+"@"+domain;
+ let password="FM-"+crypto.randomUUID();
+
+ await api("/accounts",{
+ method:"POST",
+ headers:{"Content-Type":"application/json"},
+ body:JSON.stringify({address,password})
+ });
+
+ let token=await api("/token",{
+ method:"POST",
+ headers:{"Content-Type":"application/json"},
+ body:JSON.stringify({address,password})
+ });
+
+ state.accounts.push({address,password,token:token.token});
+ state.current=address;
+ Store.save(state);
+ render();
+ sync();
+ }catch(e){alert("Erreur réseau : "+e.message)}
+}
+
+async function sync(){
+ let c=current();
+ if(!c)return;
+ try{
+ let d=await api("/messages",{
+ headers:{Authorization:"Bearer "+c.token}
+ });
+ mails=d["hydra:member"]||[];
+ renderMails();
+ }catch(e){alert(e.message)}
+}
+
+function renderMails(){
+ let q=UI.search.value.toLowerCase();
+ let list=mails.filter(m=>(m.subject+m.from.address).toLowerCase().includes(q));
+ UI.count.textContent="("+list.length+")";
+ UI.inbox.innerHTML=list.map(m=>`
+ <div class="item">
+ <b>${escape(m.subject)}</b><br>
+ <span class="small">${escape(m.from.address)}</span><br>
+ <button class="primary" onclick="openMail('${m.id}')">Lire</button>
+ </div>`).join("")||"Aucun mail";
+}
+
+async function openMail(id){
+ let c=current();
+ let m=await api("/messages/"+id,{
+ headers:{Authorization:"Bearer "+c.token}
+ });
+ UI.viewer.innerHTML=`
+ <h2>${escape(m.subject)}</h2>
+ <p>${escape(m.from.address)}</p>
+ <hr>
+ <pre>${escape(m.text||"")}</pre>`;
+}
+
+function selectAccount(a){
+ state.current=a;
+ Store.save(state);
+ mails=[];
+ render();
+ sync();
+}
+
+function removeAccount(a){
+ state.accounts=state.accounts.filter(x=>x.address!==a);
+ if(state.current===a)state.current=null;
+ Store.save(state);
+ render();
+}
+
+function copyAddress(){
+ let c=current();
+ if(c)navigator.clipboard.writeText(c.address);
+}
+
+document.getElementById("create").onclick=createAccount;
+document.getElementById("copy").onclick=copyAddress;
+document.getElementById("sync").onclick=sync;
+UI.search.oninput=renderMails;
+
+render();
+sync();
+setInterval(sync,60000);
+</script>
+</body>
+</html>
+
+<!-- FlashMail Ultimate single-file architecture: API / Storage / UI / Controller separated logically. -->
